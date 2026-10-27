@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sr. SIMAS | Overlay TikTok LIVE</title>
+<style>
+:root{--gold:#e4bd62;--gold2:#fff0b0;--black:#080808;--panel:rgba(8,8,8,.76);--white:#fffaf0}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;color:var(--white);font-family:Arial,Helvetica,sans-serif}
+#stage{position:relative;width:100vw;height:100vh;overflow:hidden;background:transparent}
+.brand{position:absolute;left:5%;top:4%;max-width:70%;padding:20px 24px;border-left:4px solid var(--gold);background:linear-gradient(90deg,rgba(0,0,0,.88),rgba(0,0,0,0));filter:drop-shadow(0 4px 12px #000)}
+.brand:after{content:"";position:absolute;left:0;bottom:0;width:78%;height:1px;background:linear-gradient(90deg,var(--gold),transparent)}
+.brand h1{font-size:clamp(25px,4.4vw,54px);line-height:1;margin:0;font-weight:900;letter-spacing:2px;text-transform:uppercase;color:var(--gold2);text-shadow:0 0 18px #e4bd6238}
+.brand p{font-size:clamp(10px,1.5vw,17px);margin:9px 0 0;letter-spacing:4px;color:var(--gold);font-weight:700}
+.cam{position:absolute;right:5%;top:17%;width:36%;height:27%;border:2px solid var(--gold);border-radius:20px;box-shadow:0 0 22px #e4bd6230,inset 0 0 22px #e4bd6214}
+.cam:before,.cam:after{content:"";position:absolute;width:30px;height:30px;border-color:var(--gold2);border-style:solid}
+.cam:before{top:-2px;left:-2px;border-width:4px 0 0 4px;border-radius:18px 0 0}
+.cam:after{right:-2px;bottom:-2px;border-width:0 4px 4px 0;border-radius:0 0 18px}
+.camlabel{position:absolute;bottom:-37px;left:4px;color:var(--gold);font-size:12px;letter-spacing:2px;font-weight:800}
+.goal{position:absolute;left:5%;right:5%;bottom:9%;padding:18px 22px;border:1px solid #e4bd6280;border-radius:15px;background:var(--panel);box-shadow:0 8px 25px #0008}
+.goalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:clamp(14px,2vw,22px);font-weight:800;letter-spacing:1px}
+.goalhead .label{color:var(--gold2)}.numbers{color:var(--gold);white-space:nowrap}
+.track{height:14px;margin-top:14px;background:#ffffff20;border-radius:20px;overflow:hidden;border:1px solid #e4bd6230}
+.bar{height:100%;width:35%;border-radius:20px;background:linear-gradient(90deg,#9e7428,var(--gold2));box-shadow:0 0 16px #e4bd6270;transition:width .35s}
+.footer{position:absolute;left:5%;right:5%;bottom:2.3%;display:flex;justify-content:space-between;gap:12px;align-items:center;font-size:clamp(9px,1.2vw,13px);letter-spacing:1.5px;color:#fff4d0;text-shadow:0 2px 6px #000}
+.live{border:1px solid #e4bd6277;border-radius:30px;padding:8px 12px;background:#080808dd;white-space:nowrap}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#d63b32;margin-right:7px;box-shadow:0 0 8px #d63b32}
+.alert{position:absolute;top:12%;left:50%;width:max-content;max-width:86%;min-width:260px;transform:translate(-50%,-18px) scale(.96);opacity:0;text-align:center;padding:18px 26px;border:1px solid var(--gold2);border-radius:15px;background:linear-gradient(120deg,#080808f2,#241b08f2);box-shadow:0 0 30px #e4bd6240;transition:all .3s}
+.alert.show{opacity:1;transform:translate(-50%,0) scale(1)}.alert strong{display:block;color:var(--gold2);font-size:clamp(16px,2.4vw,25px);letter-spacing:1px}.alert small{display:block;color:#fff4d0;margin-top:7px;font-size:clamp(11px,1.5vw,16px)}
+#demo{position:absolute;left:5%;top:18%;display:none;gap:8px;flex-wrap:wrap;max-width:45%}
+body.demo #demo{display:flex}
+button{color:#fff4d0;background:#080808e8;border:1px solid var(--gold);border-radius:9px;padding:9px 12px;font-size:12px;cursor:pointer}
+button:hover{background:#32260b}
+@media(max-width:600px){.brand{top:3%;padding:14px 16px}.cam{top:23%;width:39%;height:25%}.goal{bottom:11%;padding:13px 14px}.footer{font-size:9px}#demo{top:16%;max-width:50%}}
+</style>
+</head>
+<body>
+<div id="stage">
+  <header class="brand"><h1 id="channel">Sr. SIMAS</h1><p>AO VIVO • RESPEITO &amp; CONEXÃO</p></header>
+  <div class="cam"><div class="camlabel">✦ ÁREA DA CÂMERA</div></div>
+  <div id="demo">
+    <button onclick="showAlert('NOVO SEGUIDOR','Obrigado por fortalecer a família!')">Testar seguidor</button>
+    <button onclick="showAlert('PRESENTE RECEBIDO','Gratidão pelo presente! ✨')">Testar presente</button>
+    <button onclick="addGoal()">Meta +1</button>
+  </div>
+  <div class="alert" id="alert"><strong id="alertTitle">NOVO SEGUIDOR</strong><small id="alertMessage">Obrigado por chegar!</small></div>
+  <section class="goal">
+    <div class="goalhead"><span class="label">✦ META DA LIVE</span><span class="numbers"><b id="current">35</b> / <b id="target">100</b></span></div>
+    <div class="track"><div class="bar" id="bar"></div></div>
+  </section>
+  <footer class="footer"><span class="live"><i class="dot"></i> AO VIVO</span><span>VALEU POR COLAR, FAMÍLIA ✦</span></footer>
+</div>
+<script>
+let current=35,target=100,hideTimer;
+function showAlert(title,message){const a=document.getElementById('alert');document.getElementById('alertTitle').textContent=title;document.getElementById('alertMessage').textContent=message;a.classList.add('show');clearTimeout(hideTimer);hideTimer=setTimeout(()=>a.classList.remove('show'),3500)}
+function updateGoal(){document.getElementById('current').textContent=current;document.getElementById('bar').style.width=Math.min(100,current/target*100)+'%'}
+function addGoal(){current=Math.min(target,current+1);updateGoal();if(current>=target)showAlert('META ALCANÇADA','Essa conquista é de vocês! ✦')}
+if(new URLSearchParams(location.search).get('demo')==='1')document.body.classList.add('demo');
+</script>
+</body>
+</html>
