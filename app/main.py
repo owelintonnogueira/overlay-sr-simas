@@ -15,8 +15,10 @@ from tkinter import filedialog, messagebox, ttk
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import common  # noqa: E402
+import gpu  # noqa: E402
 import media  # noqa: E402
 import pipeline  # noqa: E402
+import subdialog  # noqa: E402
 from common import Cancelled  # noqa: E402
 
 try:
@@ -35,6 +37,10 @@ PRESETS = {
     "Extra longo (5–10 min)": (300, 600),
     "Personalizado": None,
 }
+GPU_CHOICES = {
+    "Automática (placa de vídeo + processador)": "auto",
+    "Desligada (só processador)": "off",
+}
 BG, FG, CARD, ACCENT, MUTED = "#14151a", "#eceef4", "#1d1f27", "#7c5cff", "#8b90a0"
 SETTINGS = common.data_dir() / "config.json"
 LOG_FILE = common.data_dir() / "log.txt"
@@ -48,7 +54,7 @@ class App:
         self.thread: threading.Thread | None = None
         self.result_dir: Path | None = None
         root.title(APP_NAME)
-        root.geometry("820x860")
+        root.geometry("820x920")
         root.minsize(760, 760)
         root.configure(bg=BG)
         self._style()
@@ -89,12 +95,14 @@ class App:
         self.v_max = tk.StringVar(value="60")
         self.v_layout = tk.StringVar(value="Vertical 9:16 – fundo desfocado")
         self.v_subs = tk.BooleanVar(value=True)
-        self.v_anim = tk.BooleanVar(value=True)
         self.v_srt = tk.BooleanVar(value=False)
         self.v_lang = tk.StringVar(value="Português")
         self.v_model = tk.StringVar(value="small – equilibrado (recomendado)")
         self.v_quality = tk.StringVar(value="1080p")
         self.v_cookies = tk.StringVar(value="Nenhum")
+        self.v_gpu = tk.StringVar(value="Automática (placa de vídeo + processador)")
+        self.v_cpu = tk.StringVar(value="80")
+        self.sub_style: dict = {}
         self.v_out = tk.StringVar(value=str(common.default_output_dir()))
         self.v_status = tk.StringVar(value="Pronto para começar.")
 
@@ -162,11 +170,16 @@ class App:
         lab(3, 2, "Cookies do navegador")
         ttk.Combobox(box, textvariable=self.v_cookies, values=["Nenhum", "Chrome", "Edge", "Firefox", "Brave"], state="readonly").grid(row=3, column=3, sticky="ew")
 
+        lab(4, 0, "Placa de vídeo")
+        ttk.Combobox(box, textvariable=self.v_gpu, values=list(GPU_CHOICES), state="readonly").grid(row=4, column=1, sticky="ew")
+        lab(4, 2, "Limite do processador (%)")
+        ttk.Spinbox(box, from_=30, to=100, increment=5, textvariable=self.v_cpu, width=8).grid(row=4, column=3, sticky="w")
+
         chk = ttk.Frame(self.root)
         chk.pack(fill="x", **pad)
         ttk.Checkbutton(chk, text="Legendas no vídeo", variable=self.v_subs).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(chk, text="Palavra falada em destaque", variable=self.v_anim).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(chk, text="Salvar também arquivo .srt", variable=self.v_srt).pack(side="left")
+        ttk.Checkbutton(chk, text="Salvar também arquivo .srt", variable=self.v_srt).pack(side="left", padx=(0, 18))
+        ttk.Button(chk, text="🎨  Personalizar legenda…", command=self._open_sub_dialog).pack(side="left")
 
         outr = ttk.Frame(self.root)
         outr.pack(fill="x", pady=10, **pad)
@@ -234,9 +247,10 @@ class App:
         try:
             n = int(self.v_n.get())
             mn, mx = float(self.v_min.get()), float(self.v_max.get())
-            assert 1 <= n <= 200 and 5 <= mn <= mx
+            cpu = int(float(self.v_cpu.get()))
+            assert 1 <= n <= 200 and 5 <= mn <= mx and 30 <= cpu <= 100
         except (ValueError, AssertionError):
-            messagebox.showwarning(APP_NAME, "Confira a quantidade (1–200) e as durações (mínima ≤ máxima, em segundos).")
+            messagebox.showwarning(APP_NAME, "Confira a quantidade (1–200), as durações (mínima ≤ máxima, em segundos) e o limite do processador (30–100%).")
             return
         if not self.v_source.get().strip():
             messagebox.showwarning(APP_NAME, "Solte um vídeo aqui ou cole um link.")
@@ -244,9 +258,20 @@ class App:
         opts = pipeline.Options(
             source=self.v_source.get(), out_dir=self.v_out.get(), n_clips=n, min_s=mn, max_s=mx,
             model=pipeline.MODELS[self.v_model.get()], language=pipeline.LANGUAGES[self.v_lang.get()],
-            layout=self.v_layout.get(), subtitles=self.v_subs.get(), animated=self.v_anim.get(),
+            layout=self.v_layout.get(), subtitles=self.v_subs.get(), sub_style=self.sub_style or None,
             save_srt=self.v_srt.get(), quality=self.v_quality.get(), cookies_browser=self.v_cookies.get(),
+            gpu=GPU_CHOICES.get(self.v_gpu.get(), "auto"), cpu_limit=cpu,
         )
+        if opts.gpu == "auto":
+            g = gpu.nvidia_gpu()
+            if g and not gpu.libs_ready():
+                opts.allow_cuda_download = messagebox.askyesno(
+                    APP_NAME,
+                    f"Placa de vídeo NVIDIA detectada: {g['name']}.\n\n"
+                    "Para usá-la na transcrição, preciso baixar bibliotecas gratuitas da NVIDIA "
+                    "(cerca de 600 MB, uma vez só).\n\nBaixar agora?\n\n"
+                    "(Se você responder Não, a transcrição usa o processador; a codificação do vídeo ainda pode usar a placa.)",
+                )
         self._save_settings()
         self.cancel.clear()
         self.btn_go.configure(state="disabled")
@@ -317,9 +342,11 @@ class App:
 
     # ------------------------------------------------------------ preferências
     def _save_settings(self):
-        keys = ["n", "preset", "min", "max", "layout", "subs", "anim", "srt", "lang", "model", "quality", "cookies", "out"]
+        keys = ["n", "preset", "min", "max", "layout", "subs", "srt", "lang", "model", "quality", "cookies", "gpu", "cpu", "out"]
         try:
-            SETTINGS.write_text(json.dumps({k: getattr(self, f"v_{k}").get() for k in keys}), encoding="utf-8")
+            data = {k: getattr(self, f"v_{k}").get() for k in keys}
+            data["sub_style"] = self.sub_style
+            SETTINGS.write_text(json.dumps(data), encoding="utf-8")
         except OSError:
             pass
 
@@ -328,6 +355,8 @@ class App:
             data = json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
+        if isinstance(data.get("sub_style"), dict):
+            self.sub_style = data["sub_style"]
         for k, v in data.items():
             var = getattr(self, f"v_{k}", None)
             if var is not None:
@@ -335,6 +364,18 @@ class App:
                     var.set(v)
                 except tk.TclError:
                     pass
+
+    def _open_sub_dialog(self):
+        src = self.v_source.get().strip().strip('"')
+        video = src if src and not src.lower().startswith(("http://", "https://")) and Path(src).is_file() else None
+        dlg = subdialog.SubtitleDialog(
+            self.root, self.sub_style, video, self.v_layout.get(), dict(bg=BG, card=CARD, muted=MUTED)
+        )
+        self.root.wait_window(dlg)
+        if dlg.result is not None:
+            self.sub_style = dlg.result
+            self._save_settings()
+            self._log("Estilo de legenda atualizado.")
 
     def _close(self):
         self.cancel.set()

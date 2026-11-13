@@ -7,7 +7,10 @@ import subprocess
 from collections import deque
 from pathlib import Path
 
-from common import CREATE_NO_WINDOW, Cancelled, find_tool, try_find_tool
+from common import BELOW_NORMAL_PRIORITY, CREATE_NO_WINDOW, Cancelled, find_tool, try_find_tool
+
+# Preenchido pelo pipeline: nº de threads e prioridade dos processos do ffmpeg
+CONFIG = {"threads": os.cpu_count() or 4, "low_priority": False}
 
 
 def _popen(cmd: list[str], cwd: str | None = None) -> subprocess.Popen:
@@ -20,7 +23,7 @@ def _popen(cmd: list[str], cwd: str | None = None) -> subprocess.Popen:
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=CREATE_NO_WINDOW,
+        creationflags=CREATE_NO_WINDOW | (BELOW_NORMAL_PRIORITY if CONFIG["low_priority"] else 0),
     )
 
 
@@ -158,10 +161,11 @@ def output_size(layout: str, src_w: int, src_h: int) -> tuple[int, int]:
     return w - w % 2, h - h % 2
 
 
-def build_cut_args(src: str, start: float, dur: float, out: str, layout: str, src_size: tuple[int, int], with_subs: bool, fonts: bool) -> list[str]:
+def video_filter_args(layout: str, src_size: tuple[int, int], with_subs: bool, fonts: bool, tail: str = "") -> list[str]:
+    """Filtros de imagem do corte (formato + legenda). 'tail' é acrescentado no final (usado na prévia)."""
     ass = "ass=sub.ass" + (":fontsdir=fonts" if fonts else "")
     W, H = output_size(layout, *src_size)
-    args = ["-ss", f"{start:.3f}", "-i", src, "-t", f"{dur:.3f}"]
+    t = ("," + tail) if tail else ""
     if layout == "vertical_blur":
         fc = (
             "[0:v]split=2[a][b];"
@@ -169,27 +173,96 @@ def build_cut_args(src: str, start: float, dur: float, out: str, layout: str, sr
             "[b]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2"
             + ("," + ass if with_subs else "")
-            + ",setsar=1[out]"
+            + ",setsar=1" + t + "[out]"
         )
-        args += ["-filter_complex", fc, "-map", "[out]", "-map", "0:a:0?"]
+        return ["-filter_complex", fc, "-map", "[out]"]
+    if layout == "vertical_crop":
+        vf = ["scale=1080:1920:force_original_aspect_ratio=increase", "crop=1080:1920"]
+    elif (W, H) != src_size:
+        vf = [f"scale={W}:{H}"]
     else:
-        if layout == "vertical_crop":
-            vf = ["scale=1080:1920:force_original_aspect_ratio=increase", "crop=1080:1920"]
-        elif (W, H) != src_size:
-            vf = [f"scale={W}:{H}"]
-        else:
-            vf = []
-        if with_subs:
-            vf.append(ass)
-        vf.append("setsar=1")
-        args += ["-vf", ",".join(vf)]
-    args += [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart", out,
-    ]
+        vf = []
+    if with_subs:
+        vf.append(ass)
+    vf.append("setsar=1")
+    if tail:
+        vf.append(tail)
+    return ["-vf", ",".join(vf)]
+
+
+def build_cut_args(src: str, start: float, dur: float, out: str, layout: str, src_size: tuple[int, int], with_subs: bool, fonts: bool, venc: list[str] | None = None) -> list[str]:
+    args = ["-threads", str(CONFIG["threads"]), "-ss", f"{start:.3f}", "-i", src, "-t", f"{dur:.3f}"]
+    args += video_filter_args(layout, src_size, with_subs, fonts)
+    if layout == "vertical_blur":
+        args += ["-map", "0:a:0?"]
+    args += (venc or _x264())
+    args += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart", out]
     return args
 
 
-def cut_clip(src: str, start: float, dur: float, out: str, workdir: Path, layout: str, src_size: tuple[int, int], with_subs: bool, fonts: bool, cancel, on_progress=None) -> None:
-    args = build_cut_args(src, start, dur, out, layout, src_size, with_subs, fonts)
-    run_ffmpeg(args, cancel, cwd=str(workdir), duration=dur, on_progress=on_progress)
+def render_preview(video: str | None, layout: str, workdir: Path, png: str, fonts: bool, cancel) -> None:
+    """Gera um quadro (PNG) com a legenda já queimada (sub.ass em workdir), usando o mesmo motor do corte."""
+    if video:
+        info = probe(video)
+        src_size = (info["width"], info["height"])
+        inp = ["-ss", f"{min(max(info['duration'] * 0.3, 0), 600):.2f}", "-i", video]
+    else:
+        src_size = (1920, 1080)
+        inp = ["-f", "lavfi", "-i", "color=c=0x2b3a67:s=1920x1080:d=4:r=25"]
+    vertical = layout != "original"
+    tail = "scale=270:-2" if vertical else "scale=480:-2"
+    args = [*inp, "-ss", "1.2", *video_filter_args(layout, src_size, True, fonts, tail), "-frames:v", "1", "-an", png]
+    run_ffmpeg(args, cancel, cwd=str(workdir))
+
+
+def _x264() -> list[str]:
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", str(CONFIG["threads"])]
+
+
+# Codificadores por placa de vídeo, em ordem de preferência
+GPU_ENCODERS = [
+    ("NVIDIA NVENC", ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "22", "-b:v", "0"]),
+    ("Intel Quick Sync", ["-c:v", "h264_qsv", "-global_quality", "23", "-preset", "veryfast"]),
+    ("AMD AMF", ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "22", "-qp_p", "22"]),
+]
+_enc = {"name": "Processador (x264)", "args": None, "gpu": False}
+
+
+def _encoder_works(args: list[str]) -> bool:
+    try:
+        p = subprocess.run(
+            [find_tool("ffmpeg"), "-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=640x360:d=0.3:r=25", "-frames:v", "5", *args,
+             "-pix_fmt", "yuv420p", "-f", "null", "-"],
+            capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW,
+        )
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def select_encoder(use_gpu: bool) -> str:
+    """Escolhe o codificador (placa de vídeo se funcionar, senão processador). Retorna o nome."""
+    _enc.update(name="Processador (x264)", args=None, gpu=False)
+    if use_gpu:
+        for name, args in GPU_ENCODERS:
+            if _encoder_works(args):
+                _enc.update(name=name, args=args, gpu=True)
+                break
+    return _enc["name"]
+
+
+def cut_clip(src: str, start: float, dur: float, out: str, workdir: Path, layout: str, src_size: tuple[int, int], with_subs: bool, fonts: bool, cancel, on_progress=None, log=None) -> None:
+    def attempt():
+        args = build_cut_args(src, start, dur, out, layout, src_size, with_subs, fonts, _enc["args"])
+        run_ffmpeg(args, cancel, cwd=str(workdir), duration=dur, on_progress=on_progress)
+
+    try:
+        attempt()
+    except RuntimeError as e:
+        if not _enc["gpu"]:
+            raise
+        if log:
+            log(f"A placa de vídeo recusou a codificação ({_enc['name']}); voltando para o processador.")
+        _enc.update(name="Processador (x264)", args=None, gpu=False)
+        attempt()

@@ -12,9 +12,11 @@ from pathlib import Path
 
 import numpy as np
 
+import gpu
 import highlights as hl
 import media
 import subtitles as subs
+import common
 from common import Cancelled, fmt_clock, fmt_hms, safe_name, slugify
 
 LANGUAGES = {
@@ -40,11 +42,13 @@ class Options:
     language: str | None = None
     layout: str = "vertical_blur"
     subtitles: bool = True
-    animated: bool = True
+    sub_style: dict | None = None   # personalização da legenda (ver subtitles.SubStyle)
     save_srt: bool = False
     quality: str = "1080p"
     cookies_browser: str = "Nenhum"
-    device: str = "auto"
+    gpu: str = "auto"              # "auto" = usa a placa de vídeo quando possível | "off"
+    cpu_limit: int = 80            # teto de uso do processador, em %
+    allow_cuda_download: bool = True
 
 
 def _noop(*a, **k):
@@ -54,25 +58,37 @@ def _noop(*a, **k):
 # --------------------------------------------------------------------------
 # Transcrição (faster-whisper, 100% local)
 # --------------------------------------------------------------------------
-def transcribe(wav: str, model_name: str, language: str | None, device_pref: str, duration: float, log, progress, cancel):
+def transcribe(wav: str, model_name: str, language: str | None, opts: Options, duration: float, log, progress, cancel):
     from faster_whisper import WhisperModel
 
     attempts = []
-    if device_pref in ("auto", "gpu"):
-        try:
-            import ctranslate2
-
-            if ctranslate2.get_cuda_device_count() > 0:
-                attempts.append(("cuda", "float16"))
-        except Exception:
-            pass
+    if opts.gpu == "auto":
+        g = gpu.nvidia_gpu()
+        if g:
+            log(f"Placa de vídeo NVIDIA detectada: {g['name']} ({g['vram_mb'] // 1024} GB)")
+            if not gpu.libs_ready() and opts.allow_cuda_download:
+                try:
+                    gpu.download_libs(log, lambda f: progress(0.20, f"Baixando bibliotecas da placa de vídeo... {int(f * 100)}%"), cancel)
+                except Cancelled:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    log(f"Não consegui preparar a placa de vídeo ({e}). Vou usar o processador.")
+            if gpu.libs_ready():
+                gpu.activate()
+                attempts.append(("cuda", "int8_float16" if model_name == "medium" else "float16"))
+            else:
+                log("Bibliotecas CUDA não instaladas — transcrição no processador.")
+        else:
+            log("Nenhuma placa NVIDIA encontrada — transcrição no processador "
+                "(placas AMD/Intel ainda ajudam a codificar o vídeo).")
     attempts.append(("cpu", "int8"))
 
     for dev, ctype in attempts:
         try:
             log(f"Carregando o modelo de voz '{model_name}' ({'placa de vídeo' if dev == 'cuda' else 'processador'})... "
                 "Na primeira vez ele é baixado da internet (uma vez só).")
-            model = WhisperModel(model_name, device=dev, compute_type=ctype, cpu_threads=os.cpu_count() or 4)
+            threads = 2 if dev == "cuda" else common.cpu_threads(opts.cpu_limit)
+            model = WhisperModel(model_name, device=dev, compute_type=ctype, cpu_threads=threads)
             seg_iter, info = model.transcribe(
                 wav,
                 language=language,
@@ -128,6 +144,10 @@ def run(opts: Options, log=_noop, progress=_noop, cancel=None) -> list[Path]:
         raise ValueError("Escolha um vídeo ou cole um link.")
     out_root = Path(opts.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
+    media.CONFIG["threads"] = common.cpu_threads(opts.cpu_limit)
+    media.CONFIG["low_priority"] = opts.cpu_limit < 100
+    capped = common.limit_cpu(opts.cpu_limit)
+    log(f"Limite do processador: {opts.cpu_limit}%" + (" (travado pelo Windows)" if capped else f" (~{media.CONFIG['threads']} núcleos)"))
 
     # 1) fonte do vídeo ------------------------------------------------------
     if re.match(r"https?://", src, re.I):
@@ -168,7 +188,7 @@ def run(opts: Options, log=_noop, progress=_noop, cancel=None) -> list[Path]:
         log("Analisando volume do áudio...")
         energy = hl.audio_energy_db(str(wav), cancel)
         segments = transcribe(
-            str(wav), opts.model, opts.language, opts.device, duration, log,
+            str(wav), opts.model, opts.language, opts, duration, log,
             lambda f: progress(0.20 + 0.50 * f, f"Transcrevendo a fala... {int(f * 100)}%"), cancel,
         )
         wav.unlink(missing_ok=True)
@@ -195,10 +215,11 @@ def run(opts: Options, log=_noop, progress=_noop, cancel=None) -> list[Path]:
     clips_dir.mkdir(exist_ok=True)
     layout = media.LAYOUTS.get(opts.layout, opts.layout)
     vertical = layout != "original"
-    style = subs.SubStyle(**vars(subs.STYLE_VERTICAL if vertical else subs.STYLE_HORIZONTAL))
-    style.animated = opts.animated
+    style = subs.style_from_dict(opts.sub_style)
     out_size = media.output_size(layout, info["width"], info["height"])
-    font_family, has_fonts = subs.prepare_font(work)
+    font_family, has_fonts = subs.prepare_font(work, style.font)
+    enc = media.select_encoder(opts.gpu == "auto")
+    log(f"Codificação do vídeo: {enc}" + (" (processador livre para o resto)" if enc != "Processador (x264)" else ""))
 
     produced: list[tuple[hl.Clip, Path]] = []
     by_rank = sorted(clips, key=lambda c: c.rank)
@@ -209,16 +230,17 @@ def run(opts: Options, log=_noop, progress=_noop, cancel=None) -> list[Path]:
         name = f"{c.rank:02d}_{slugify(c.title, 30)}_{fmt_hms(c.start)}.mp4"
         out = clips_dir / name
         words = subs.clip_words(segments, c.start, c.end)
-        chunks = subs.make_chunks(words, style)
+        chunks = subs.make_chunks(words, style, vertical)
         with_subs = opts.subtitles and bool(chunks)
         if with_subs:
-            (work / "sub.ass").write_text(subs.build_ass(chunks, out_size, style, font_family), encoding="utf-8")
+            (work / "sub.ass").write_text(subs.build_ass(chunks, out_size, style, font_family, vertical), encoding="utf-8")
         if opts.save_srt and chunks:
             (clips_dir / (out.stem + ".srt")).write_text(subs.build_srt(chunks), encoding="utf-8")
         media.cut_clip(
             str(video), c.start, c.duration, str(out), work, layout, (info["width"], info["height"]),
             with_subs, has_fonts, cancel,
             on_progress=lambda f, b=base, s=span, k=k: progress(b + s * f, f"Cortando {k}/{len(by_rank)}..."),
+            log=log,
         )
         produced.append((c, out))
         log(f"✔ {name}  ({fmt_clock(c.start)} → {fmt_clock(c.end)}, {c.reason})")
@@ -241,3 +263,30 @@ def _write_summary(path: Path, video: Path, produced: list[tuple[hl.Clip, Path]]
             "",
         ]
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# Prévia da legenda (usa o mesmo ffmpeg/libass do corte final)
+# --------------------------------------------------------------------------
+PREVIEW_WORDS = ["Esta", "é", "a", "prévia", "da", "sua", "legenda"]
+
+
+def make_preview(video: str | None, layout_label: str, style_dict: dict | None, workdir: Path, png: Path, cancel=None) -> None:
+    import threading
+
+    cancel = cancel or threading.Event()
+    layout = media.LAYOUTS.get(layout_label, layout_label)
+    vertical = layout != "original"
+    style = subs.style_from_dict(style_dict)
+    has_video = bool(video) and Path(video).is_file()
+    src = (1920, 1080)
+    if has_video:
+        info = media.probe(video)
+        src = (info["width"], info["height"])
+    size = media.output_size(layout, *src)
+    words = [hl.Word(i * 0.5, i * 0.5 + 0.45, t) for i, t in enumerate(PREVIEW_WORDS)]
+    chunks = subs.make_chunks(words, style, vertical)
+    workdir.mkdir(parents=True, exist_ok=True)
+    family, has_fonts = subs.prepare_font(workdir, style.font)
+    (workdir / "sub.ass").write_text(subs.build_ass(chunks, size, style, family, vertical), encoding="utf-8")
+    media.render_preview(video if has_video else None, layout, workdir, str(png), has_fonts, cancel)

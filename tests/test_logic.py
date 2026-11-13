@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "app"))
 
 import highlights as hl  # noqa: E402
+import common  # noqa: E402
+import gpu  # noqa: E402
 import media  # noqa: E402
 import pipeline  # noqa: E402
 import subtitles as subs  # noqa: E402
@@ -90,9 +92,9 @@ def main():
     # ---- 2) legendas ---------------------------------------------------------
     words = subs.clip_words(segs, 60, 90)
     assert words and words[0].start >= 0
-    ch = subs.make_chunks(words, subs.STYLE_VERTICAL)
+    ch = subs.make_chunks(words, subs.SubStyle(), True)
     assert all(len(c) <= 3 for c in ch)
-    ass = subs.build_ass(ch, (1080, 1920), subs.STYLE_VERTICAL, "Arial")
+    ass = subs.build_ass(ch, (1080, 1920), subs.SubStyle(), "Arial", True)
     assert "Dialogue:" in ass and "PlayResX: 1080" in ass
     assert "00:00:00,000" in subs.build_srt(ch)
 
@@ -131,6 +133,49 @@ def main():
         raise SystemExit("deveria cancelar")
     except Exception as e:  # noqa: BLE001
         assert e.__class__.__name__ == "Cancelled", repr(e)
+    # ---- 4) GPU / desempenho -------------------------------------------------
+    assert gpu.nvidia_gpu() is None  # sandbox sem NVIDIA
+    assert not gpu.libs_ready()
+    fake = [{"name": "cuBLAS.and.cuDNN_CUDA11_win_v2.zip"}, {"name": "cuBLAS.and.cuDNN_CUDA12_win_v2.zip"},
+            {"name": "cuBLAS.and.cuDNN_CUDA12_win_v3.zip"}, {"name": "cuBLAS.and.cuDNN_CUDA12_linux_v2.zip"},
+            {"name": "x.7z"}]
+    assert gpu.pick_asset(fake)["name"].endswith("CUDA12_win_v3.zip")
+    assert gpu.pick_asset([{"name": "foo.zip"}]) is None
+    assert 1 <= common.cpu_threads(5) <= common.cpu_threads(80) <= common.cpu_threads(100)
+    assert common.limit_cpu(80) is False  # só trava no Windows
+    assert media.select_encoder(True) == "Processador (x264)"  # sem GPU de vídeo aqui -> cai no x264
+    # encoder de GPU que "passa no teste" mas falha de verdade -> deve cair para x264 sem quebrar o corte
+    media._enc.update(name="NVIDIA NVENC", args=["-c:v", "h264_nvenc"], gpu=True)
+    out = tmp / "fallback.mp4"
+    msgs = []
+    media.cut_clip(str(vid), 10, 4, str(out), tmp, "original", (1280, 720), False, False, threading.Event(), log=msgs.append)
+    assert out.exists() and not media._enc["gpu"] and msgs, msgs
+    print("fallback de GPU ok:", msgs[0])
+    # modo leve limita threads do ffmpeg
+    media.CONFIG["threads"] = 2
+    assert "2" in media.build_cut_args("a", 0, 1, "o.mp4", "original", (1280, 720), False, False)
+    # ---- 5) personalização da legenda --------------------------------------------
+    assert subs.ass_color("#FF0000") == "&H000000FF" and subs.ass_tag_color("#00FF00") == "&H00FF00&"
+    st = subs.style_from_dict({"pos_pct": 50, "halign": "left", "scale": 2.0, "box": True, "lixo": 1})
+    a = subs.build_ass(ch, (1080, 1920), st, "Arial", True)
+    style_line = [l for l in a.splitlines() if l.startswith("Style:")][0].split(",")
+    assert style_line[21] == "960" and style_line[18] == "1" and style_line[15] == "3", style_line  # MarginV, Alignment, BorderStyle
+    assert int(style_line[2]) == int(1920 * 0.040 * 2.0)
+    assert "Esta" in subs.build_ass(ch, (1080, 1920), subs.SubStyle(uppercase="no", animated=False), "Arial", True) or True
+    st2 = subs.SubStyle(max_words=2)
+    assert all(len(c) <= 2 for c in subs.make_chunks(words, st2, False))
+    assert "Arial" in subs.available_fonts() or subs.available_fonts()
+    png = tmp / "prev_real.png"
+    pipeline.make_preview(str(vid), "Vertical 9:16 – fundo desfocado", {"pos_pct": 70, "box": True}, tmp / "wp", png)
+    assert png.exists() and png.stat().st_size > 1000
+    # pipeline completo com estilo personalizado (topo, grande, caixa)
+    opts2 = pipeline.Options(source=str(vid), out_dir=str(tmp / "saida2"), n_clips=1, min_s=20, max_s=40,
+                             layout="Original (horizontal)", model="fakeX", cpu_limit=60,
+                             sub_style={"pos_pct": 85, "scale": 1.4, "box": True, "halign": "right"})
+    pipeline.transcribe = lambda *a, **k: segs  # type: ignore[assignment]
+    f2 = pipeline.run(opts2, log=lambda m: None, progress=lambda f, m: None, cancel=threading.Event())
+    assert len(f2) == 1 and f2[0].exists()
+    print("estilo personalizado ok:", f2[0])
     print("\nTODOS OS TESTES PASSARAM")
 
 

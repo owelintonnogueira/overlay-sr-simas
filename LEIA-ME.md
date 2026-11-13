@@ -22,6 +22,12 @@ Quer só testar antes de instalar? `RODAR_SEM_INSTALAR.bat`.
 3. Escolha o **formato**: horizontal, vertical com recorte central ou vertical com fundo desfocado (Shorts/Reels/TikTok).
 4. Clique em **Gerar cortes**. Os arquivos ficam em `Vídeos\CortesLive\<nome do vídeo>\cortes\`, numerados do melhor (`01`) para o pior, junto com `resumo_cortes.txt` (horários, motivo da escolha e trecho da fala).
 
+Desempenho (placa de vídeo + processador):
+- **Limite do processador (%)**: padrão 80%. No Windows o teto é imposto de verdade (nenhum núcleo extra é usado além disso), então o PC esquenta menos e continua fluido.
+- **Placa de vídeo – Automática**: com placa **NVIDIA**, a transcrição roda nela (na primeira vez o programa pede para baixar ~600 MB de bibliotecas gratuitas da NVIDIA) e o vídeo é codificado por NVENC. Com **Intel/AMD**, só a codificação do vídeo usa a placa (Quick Sync / AMF). Se a placa recusar algo, ele volta sozinho para o processador.
+
+Legenda personalizável (botão **🎨 Personalizar legenda…**): estilo pronto, fonte, tamanho, altura na tela (ou posição rápida: embaixo / meio / topo), alinhamento esquerda-centro-direita, cores, contorno, caixa escura, palavras por linha, MAIÚSCULAS e destaque da palavra falada — com prévia usando um quadro do seu próprio vídeo.
+
 Dicas:
 - Já processou uma live e quer **mais cortes ou outra duração**? Rode de novo: a transcrição é reaproveitada (leva só o tempo do corte).
 - Link do YouTube pedindo login / "confirme que não é um robô"? Escolha seu navegador em **Cookies do navegador**.
