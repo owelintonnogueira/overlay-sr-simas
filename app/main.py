@@ -1,4 +1,4 @@
-"""Cortes de Live – interface gráfica."""
+"""Cortes de Live – interface gráfica (tema laranja e preto)."""
 from __future__ import annotations
 
 import ctypes
@@ -19,6 +19,7 @@ import gpu  # noqa: E402
 import media  # noqa: E402
 import pipeline  # noqa: E402
 import subdialog  # noqa: E402
+import theme as T  # noqa: E402
 from common import Cancelled  # noqa: E402
 
 try:
@@ -41,9 +42,12 @@ GPU_CHOICES = {
     "Automática (placa de vídeo + processador)": "auto",
     "Desligada (só processador)": "off",
 }
-BG, FG, CARD, ACCENT, MUTED = "#14151a", "#eceef4", "#1d1f27", "#7c5cff", "#8b90a0"
 SETTINGS = common.data_dir() / "config.json"
 LOG_FILE = common.data_dir() / "log.txt"
+
+
+def _is_url(s: str) -> bool:
+    return s.lower().startswith(("http://", "https://"))
 
 
 class App:
@@ -53,40 +57,25 @@ class App:
         self.cancel = threading.Event()
         self.thread: threading.Thread | None = None
         self.result_dir: Path | None = None
+        self.sub_style: dict = {}
+        self._drop_hot = False
         root.title(APP_NAME)
-        root.geometry("820x920")
-        root.minsize(760, 760)
-        root.configure(bg=BG)
-        self._style()
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"880x{min(960, max(640, sh - 80))}+{max(0, (sw - 880) // 2)}+20")
+        root.minsize(820, 620)
+        try:
+            root.iconbitmap(str(common.base_dir() / "assets" / "icon.ico"))
+        except Exception:  # noqa: BLE001
+            pass
+        T.apply(root)
         self._vars()
         self._build()
         self._load_settings()
+        self._draw_drop()
         root.protocol("WM_DELETE_WINDOW", self._close)
-        self.root.after(100, self._poll)
+        root.after(100, self._poll)
 
-    # ---------------------------------------------------------------- estilo
-    def _style(self):
-        s = ttk.Style()
-        s.theme_use("clam")
-        s.configure(".", background=BG, foreground=FG, fieldbackground=CARD, font=("Segoe UI", 10))
-        s.configure("TFrame", background=BG)
-        s.configure("Card.TFrame", background=CARD)
-        s.configure("TLabel", background=BG, foreground=FG)
-        s.configure("Muted.TLabel", foreground=MUTED)
-        s.configure("Card.TLabel", background=CARD)
-        s.configure("H.TLabel", font=("Segoe UI", 18, "bold"))
-        s.configure("TCheckbutton", background=BG, foreground=FG)
-        s.map("TCheckbutton", background=[("active", BG)])
-        s.configure("TEntry", fieldbackground=CARD, foreground=FG, insertcolor=FG)
-        s.configure("TCombobox", fieldbackground=CARD, foreground=FG, arrowcolor=FG)
-        s.map("TCombobox", fieldbackground=[("readonly", CARD)], foreground=[("readonly", FG)])
-        s.configure("TSpinbox", fieldbackground=CARD, foreground=FG, arrowcolor=FG)
-        s.configure("TButton", background=CARD, foreground=FG, padding=8, borderwidth=0)
-        s.map("TButton", background=[("active", "#2a2d38")])
-        s.configure("Accent.TButton", background=ACCENT, foreground="white", font=("Segoe UI", 11, "bold"), padding=12)
-        s.map("Accent.TButton", background=[("active", "#6a4be8"), ("disabled", "#3a3560")])
-        s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=CARD, borderwidth=0)
-
+    # ------------------------------------------------------------------ vars
     def _vars(self):
         self.v_source = tk.StringVar()
         self.v_n = tk.StringVar(value="10")
@@ -102,106 +91,155 @@ class App:
         self.v_cookies = tk.StringVar(value="Nenhum")
         self.v_gpu = tk.StringVar(value="Automática (placa de vídeo + processador)")
         self.v_cpu = tk.StringVar(value="80")
-        self.sub_style: dict = {}
         self.v_out = tk.StringVar(value=str(common.default_output_dir()))
         self.v_status = tk.StringVar(value="Pronto para começar.")
+        self.v_source.trace_add("write", lambda *a: self._draw_drop())
 
-    # ------------------------------------------------------------------- UI
+    # -------------------------------------------------------------------- UI
+    def _card(self, parent, title: str) -> tk.Frame:
+        f = tk.Frame(parent, bg=T.CARD, highlightthickness=1, highlightbackground=T.BORDER, highlightcolor=T.BORDER)
+        f.pack(fill="x", pady=(10, 0))
+        tk.Label(f, text=title.upper(), bg=T.CARD, fg=T.ORANGE, font=(T.FONT, 9, "bold")).pack(anchor="w", padx=14, pady=(10, 0))
+        inner = tk.Frame(f, bg=T.CARD)
+        inner.pack(fill="x", padx=14, pady=(6, 12))
+        return inner
+
     def _build(self):
-        pad = {"padx": 20}
-        ttk.Label(self.root, text="✂  Cortes de Live", style="H.TLabel").pack(anchor="w", pady=(16, 0), **pad)
-        ttk.Label(self.root, text="Solte um vídeo ou cole um link. O programa acha os melhores momentos, corta e legenda — tudo grátis e offline.",
-                  style="Muted.TLabel", wraplength=760).pack(anchor="w", pady=(0, 10), **pad)
+        outer = ttk.Frame(self.root, padding=(24, 18, 24, 16))
+        outer.pack(fill="both", expand=True)
 
-        # zona de soltar
-        self.drop = tk.Label(
-            self.root, text="⬇  Arraste o vídeo aqui\nou clique para escolher o arquivo",
-            bg=CARD, fg=FG, font=("Segoe UI", 12), height=4, cursor="hand2",
-            highlightthickness=2, highlightbackground=ACCENT, highlightcolor=ACCENT,
-        )
-        self.drop.pack(fill="x", pady=(0, 8), **pad)
+        # cabeçalho
+        hdr = ttk.Frame(outer)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="✂", bg=T.ORANGE, fg=T.ON_ORANGE, font=(T.FONT, 18, "bold"), width=3, pady=5).pack(side="left")
+        titles = ttk.Frame(hdr)
+        titles.pack(side="left", padx=14)
+        ttk.Label(titles, text="Cortes de Live", style="H.TLabel").pack(anchor="w")
+        ttk.Label(titles, text="Ache os melhores momentos, corte e legende — grátis e no seu PC", style="Muted.TLabel").pack(anchor="w")
+
+        # 1 · vídeo
+        c1 = self._card(outer, "1 · Vídeo ou link")
+        self.drop = tk.Canvas(c1, height=88, bg=T.CARD_ALT, highlightthickness=0, cursor="hand2")
+        self.drop.pack(fill="x")
+        self.drop.bind("<Configure>", lambda e: self._draw_drop())
         self.drop.bind("<Button-1>", lambda e: self._pick_file())
+        self.drop.bind("<Enter>", lambda e: self._hot(True))
+        self.drop.bind("<Leave>", lambda e: self._hot(False))
         if HAS_DND:
             for w in (self.drop, self.root):
                 w.drop_target_register(DND_FILES)
                 w.dnd_bind("<<Drop>>", self._on_drop)
-        else:
-            self.drop.configure(text="Clique para escolher o arquivo de vídeo")
+        r = tk.Frame(c1, bg=T.CARD)
+        r.pack(fill="x", pady=(10, 0))
+        tk.Label(r, text="ou cole um link:", bg=T.CARD, fg=T.MUTED, font=(T.FONT, 10)).pack(side="left")
+        ttk.Entry(r, textvariable=self.v_source).pack(side="left", fill="x", expand=True, padx=(10, 0))
+        tk.Label(c1, text="YouTube, Twitch, Kick, TikTok, Instagram, X/Twitter, Facebook e centenas de outros sites.",
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", pady=(6, 0))
 
-        row = ttk.Frame(self.root)
-        row.pack(fill="x", pady=(0, 10), **pad)
-        ttk.Label(row, text="Vídeo ou link:").pack(side="left")
-        ttk.Entry(row, textvariable=self.v_source).pack(side="left", fill="x", expand=True, padx=8)
-        ttk.Label(self.root, text="Links aceitos: YouTube, Twitch, Kick, TikTok, Instagram, X/Twitter, Facebook e centenas de outros.",
-                  style="Muted.TLabel").pack(anchor="w", **pad)
-
-        # opções
-        box = ttk.Frame(self.root)
-        box.pack(fill="x", pady=10, **pad)
-        box.columnconfigure(1, weight=1)
-        box.columnconfigure(3, weight=1)
-
-        def lab(r, c, t):
-            ttk.Label(box, text=t).grid(row=r, column=c, sticky="w", pady=5, padx=(0, 8))
-
-        lab(0, 0, "Quantidade de cortes")
-        ttk.Spinbox(box, from_=1, to=200, textvariable=self.v_n, width=8).grid(row=0, column=1, sticky="w")
-        lab(0, 2, "Formato")
-        ttk.Combobox(box, textvariable=self.v_layout, values=list(media.LAYOUTS), state="readonly").grid(row=0, column=3, sticky="ew")
-
-        lab(1, 0, "Duração de cada corte")
-        cb = ttk.Combobox(box, textvariable=self.v_preset, values=list(PRESETS), state="readonly")
-        cb.grid(row=1, column=1, sticky="ew")
+        # 2 · cortes
+        c2 = self._card(outer, "2 · Cortes")
+        g = tk.Frame(c2, bg=T.CARD)
+        g.pack(fill="x")
+        g.columnconfigure(1, weight=1)
+        g.columnconfigure(3, weight=1)
+        self._lab(g, 0, 0, "Quantidade de cortes")
+        ttk.Spinbox(g, from_=1, to=200, textvariable=self.v_n, width=8).grid(row=0, column=1, sticky="w", pady=5)
+        self._lab(g, 0, 2, "Formato")
+        ttk.Combobox(g, textvariable=self.v_layout, values=list(media.LAYOUTS), state="readonly").grid(row=0, column=3, sticky="ew", pady=5)
+        self._lab(g, 1, 0, "Duração de cada corte")
+        cb = ttk.Combobox(g, textvariable=self.v_preset, values=list(PRESETS), state="readonly")
+        cb.grid(row=1, column=1, sticky="ew", pady=5)
         cb.bind("<<ComboboxSelected>>", self._on_preset)
-        lab(1, 2, "Mín. / Máx. (segundos)")
-        f = ttk.Frame(box)
-        f.grid(row=1, column=3, sticky="w")
+        self._lab(g, 1, 2, "Mín. / Máx. (segundos)")
+        f = tk.Frame(g, bg=T.CARD)
+        f.grid(row=1, column=3, sticky="w", pady=5)
         ttk.Spinbox(f, from_=5, to=3600, textvariable=self.v_min, width=6, command=self._custom).pack(side="left")
-        ttk.Label(f, text="  até  ").pack(side="left")
+        tk.Label(f, text="  até  ", bg=T.CARD, fg=T.MUTED).pack(side="left")
         ttk.Spinbox(f, from_=5, to=3600, textvariable=self.v_max, width=6, command=self._custom).pack(side="left")
+        self._lab(g, 2, 0, "Idioma da fala")
+        ttk.Combobox(g, textvariable=self.v_lang, values=list(pipeline.LANGUAGES), state="readonly").grid(row=2, column=1, sticky="ew", pady=5)
+        self._lab(g, 2, 2, "Qualidade da transcrição")
+        ttk.Combobox(g, textvariable=self.v_model, values=list(pipeline.MODELS), state="readonly").grid(row=2, column=3, sticky="ew", pady=5)
 
-        lab(2, 0, "Idioma da fala")
-        ttk.Combobox(box, textvariable=self.v_lang, values=list(pipeline.LANGUAGES), state="readonly").grid(row=2, column=1, sticky="ew")
-        lab(2, 2, "Qualidade da transcrição")
-        ttk.Combobox(box, textvariable=self.v_model, values=list(pipeline.MODELS), state="readonly").grid(row=2, column=3, sticky="ew")
+        # 3 · desempenho
+        c3 = self._card(outer, "3 · Desempenho e download")
+        g = tk.Frame(c3, bg=T.CARD)
+        g.pack(fill="x")
+        g.columnconfigure(1, weight=1)
+        g.columnconfigure(3, weight=1)
+        self._lab(g, 0, 0, "Placa de vídeo")
+        ttk.Combobox(g, textvariable=self.v_gpu, values=list(GPU_CHOICES), state="readonly").grid(row=0, column=1, sticky="ew", pady=5)
+        self._lab(g, 0, 2, "Limite do processador (%)")
+        ttk.Spinbox(g, from_=30, to=100, increment=5, textvariable=self.v_cpu, width=8).grid(row=0, column=3, sticky="w", pady=5)
+        self._lab(g, 1, 0, "Qualidade do download")
+        ttk.Combobox(g, textvariable=self.v_quality, values=["720p", "1080p", "Melhor"], state="readonly").grid(row=1, column=1, sticky="ew", pady=5)
+        self._lab(g, 1, 2, "Cookies do navegador")
+        ttk.Combobox(g, textvariable=self.v_cookies, values=["Nenhum", "Chrome", "Edge", "Firefox", "Brave"], state="readonly").grid(row=1, column=3, sticky="ew", pady=5)
 
-        lab(3, 0, "Qualidade do download")
-        ttk.Combobox(box, textvariable=self.v_quality, values=["720p", "1080p", "Melhor"], state="readonly").grid(row=3, column=1, sticky="ew")
-        lab(3, 2, "Cookies do navegador")
-        ttk.Combobox(box, textvariable=self.v_cookies, values=["Nenhum", "Chrome", "Edge", "Firefox", "Brave"], state="readonly").grid(row=3, column=3, sticky="ew")
-
-        lab(4, 0, "Placa de vídeo")
-        ttk.Combobox(box, textvariable=self.v_gpu, values=list(GPU_CHOICES), state="readonly").grid(row=4, column=1, sticky="ew")
-        lab(4, 2, "Limite do processador (%)")
-        ttk.Spinbox(box, from_=30, to=100, increment=5, textvariable=self.v_cpu, width=8).grid(row=4, column=3, sticky="w")
-
-        chk = ttk.Frame(self.root)
-        chk.pack(fill="x", **pad)
-        ttk.Checkbutton(chk, text="Legendas no vídeo", variable=self.v_subs).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(chk, text="Salvar também arquivo .srt", variable=self.v_srt).pack(side="left", padx=(0, 18))
-        ttk.Button(chk, text="🎨  Personalizar legenda…", command=self._open_sub_dialog).pack(side="left")
-
-        outr = ttk.Frame(self.root)
-        outr.pack(fill="x", pady=10, **pad)
-        ttk.Label(outr, text="Salvar em:").pack(side="left")
-        ttk.Entry(outr, textvariable=self.v_out).pack(side="left", fill="x", expand=True, padx=8)
-        ttk.Button(outr, text="Escolher…", command=self._pick_out).pack(side="left")
+        # 4 · legenda e saída
+        c4 = self._card(outer, "4 · Legenda e saída")
+        chk = tk.Frame(c4, bg=T.CARD)
+        chk.pack(fill="x")
+        ttk.Checkbutton(chk, text="Legendas no vídeo", variable=self.v_subs, style="Card.TCheckbutton").pack(side="left", padx=(0, 18))
+        ttk.Checkbutton(chk, text="Salvar também arquivo .srt", variable=self.v_srt, style="Card.TCheckbutton").pack(side="left", padx=(0, 18))
+        ttk.Button(chk, text="Personalizar legenda…", command=self._open_sub_dialog).pack(side="left")
+        o = tk.Frame(c4, bg=T.CARD)
+        o.pack(fill="x", pady=(10, 0))
+        tk.Label(o, text="Salvar em:", bg=T.CARD, fg=T.MUTED).pack(side="left")
+        ttk.Entry(o, textvariable=self.v_out).pack(side="left", fill="x", expand=True, padx=10)
+        ttk.Button(o, text="Escolher…", command=self._pick_out).pack(side="left")
 
         # ação
-        act = ttk.Frame(self.root)
-        act.pack(fill="x", pady=(4, 6), **pad)
+        act = ttk.Frame(outer)
+        act.pack(fill="x", pady=(14, 8))
         self.btn_go = ttk.Button(act, text="Gerar cortes", style="Accent.TButton", command=self._start)
         self.btn_go.pack(side="left", fill="x", expand=True)
         self.btn_cancel = ttk.Button(act, text="Cancelar", command=self._cancel, state="disabled")
-        self.btn_cancel.pack(side="left", padx=(8, 0))
+        self.btn_cancel.pack(side="left", padx=(8, 0), ipady=4)
         self.btn_open = ttk.Button(act, text="Abrir pasta", command=self._open_result, state="disabled")
-        self.btn_open.pack(side="left", padx=(8, 0))
+        self.btn_open.pack(side="left", padx=(8, 0), ipady=4)
 
-        self.bar = ttk.Progressbar(self.root, maximum=1000)
-        self.bar.pack(fill="x", **pad)
-        ttk.Label(self.root, textvariable=self.v_status, style="Muted.TLabel").pack(anchor="w", pady=(4, 6), **pad)
-        self.log = tk.Text(self.root, height=9, bg=CARD, fg=FG, relief="flat", wrap="word", font=("Consolas", 9), state="disabled")
-        self.log.pack(fill="both", expand=True, pady=(0, 16), **pad)
+        self.bar = ttk.Progressbar(outer, maximum=1000)
+        self.bar.pack(fill="x")
+        ttk.Label(outer, textvariable=self.v_status, style="Muted.TLabel").pack(anchor="w", pady=(5, 6))
+        self.log = tk.Text(outer, height=5, bg=T.CARD_ALT, fg=T.TEXT, relief="flat", wrap="word", font=("Consolas", 9),
+                           state="disabled", highlightthickness=1, highlightbackground=T.BORDER, insertbackground=T.ORANGE,
+                           padx=8, pady=6)
+        self.log.pack(fill="both", expand=True)
+
+    def _lab(self, parent, r, c, text):
+        tk.Label(parent, text=text, bg=T.CARD, fg=T.TEXT, font=(T.FONT, 10)).grid(row=r, column=c, sticky="w", pady=5, padx=(0, 10))
+
+    # ----------------------------------------------------------- zona de soltar
+    def _hot(self, on: bool):
+        self._drop_hot = on
+        self._draw_drop()
+
+    def _draw_drop(self):
+        c = getattr(self, "drop", None)
+        if c is None:
+            return
+        c.delete("all")
+        w, h = max(c.winfo_width(), 200), max(c.winfo_height(), 60)
+        c.configure(bg=T.HOVER if self._drop_hot else T.CARD_ALT)
+        c.create_rectangle(4, 4, w - 4, h - 4, outline=T.ORANGE if self._drop_hot else T.ORANGE_DIM, dash=(7, 5), width=2)
+        src = self.v_source.get().strip().strip('"')
+        if src:
+            if _is_url(src):
+                title, sub = "Link colado", src[:90]
+            else:
+                p = Path(src)
+                size = ""
+                try:
+                    size = f" • {p.stat().st_size / 1e9:.2f} GB" if p.stat().st_size > 1e9 else f" • {p.stat().st_size / 1e6:.0f} MB"
+                except OSError:
+                    pass
+                title, sub = p.name[:80], "Clique para trocar o vídeo" + size
+        else:
+            title = "Arraste o vídeo para cá" if HAS_DND else "Clique para escolher o vídeo"
+            sub = "ou clique aqui para escolher • MP4, MKV, MOV, AVI, WEBM, TS…"
+        c.create_text(w / 2, h / 2 - 11, text=title, fill=T.TEXT, font=(T.FONT, 14, "bold"))
+        c.create_text(w / 2, h / 2 + 15, text=sub, fill=T.MUTED, font=(T.FONT, 9))
 
     # ------------------------------------------------------------ callbacks
     def _on_drop(self, event):
@@ -230,6 +268,16 @@ class App:
 
     def _custom(self):
         self.v_preset.set("Personalizado")
+
+    def _open_sub_dialog(self):
+        src = self.v_source.get().strip().strip('"')
+        video = src if src and not _is_url(src) and Path(src).is_file() else None
+        dlg = subdialog.SubtitleDialog(self.root, self.sub_style, video, self.v_layout.get())
+        self.root.wait_window(dlg)
+        if dlg.result is not None:
+            self.sub_style = dlg.result
+            self._save_settings()
+            self._log("Estilo de legenda atualizado.")
 
     def _log(self, msg: str):
         self.log.configure(state="normal")
@@ -359,23 +407,11 @@ class App:
             self.sub_style = data["sub_style"]
         for k, v in data.items():
             var = getattr(self, f"v_{k}", None)
-            if var is not None:
+            if var is not None and k != "source":
                 try:
                     var.set(v)
                 except tk.TclError:
                     pass
-
-    def _open_sub_dialog(self):
-        src = self.v_source.get().strip().strip('"')
-        video = src if src and not src.lower().startswith(("http://", "https://")) and Path(src).is_file() else None
-        dlg = subdialog.SubtitleDialog(
-            self.root, self.sub_style, video, self.v_layout.get(), dict(bg=BG, card=CARD, muted=MUTED)
-        )
-        self.root.wait_window(dlg)
-        if dlg.result is not None:
-            self.sub_style = dlg.result
-            self._save_settings()
-            self._log("Estilo de legenda atualizado.")
 
     def _close(self):
         self.cancel.set()

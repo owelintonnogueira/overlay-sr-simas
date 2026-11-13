@@ -200,8 +200,10 @@ def build_cut_args(src: str, start: float, dur: float, out: str, layout: str, sr
     return args
 
 
-def render_preview(video: str | None, layout: str, workdir: Path, png: str, fonts: bool, cancel) -> None:
-    """Gera um quadro (PNG) com a legenda já queimada (sub.ass em workdir), usando o mesmo motor do corte."""
+def render_preview(video: str | None, layout: str, workdir: Path, png: str, fonts: bool, cancel, with_subs: bool = True, width: int | None = None) -> None:
+    """Gera um quadro (PNG) do corte; com with_subs usa o sub.ass de workdir (mesmo motor do corte final)."""
+    vertical = layout != "original"
+    width = width or (290 if vertical else 520)
     if video:
         info = probe(video)
         src_size = (info["width"], info["height"])
@@ -209,9 +211,8 @@ def render_preview(video: str | None, layout: str, workdir: Path, png: str, font
     else:
         src_size = (1920, 1080)
         inp = ["-f", "lavfi", "-i", "color=c=0x2b3a67:s=1920x1080:d=4:r=25"]
-    vertical = layout != "original"
-    tail = "scale=270:-2" if vertical else "scale=480:-2"
-    args = [*inp, "-ss", "1.2", *video_filter_args(layout, src_size, True, fonts, tail), "-frames:v", "1", "-an", png]
+    args = [*inp, "-ss", "1.2", *video_filter_args(layout, src_size, with_subs, fonts, f"scale={width}:-2"),
+            "-frames:v", "1", "-an", png]
     run_ffmpeg(args, cancel, cwd=str(workdir))
 
 

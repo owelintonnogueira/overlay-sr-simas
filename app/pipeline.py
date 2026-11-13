@@ -268,25 +268,46 @@ def _write_summary(path: Path, video: Path, produced: list[tuple[hl.Clip, Path]]
 # --------------------------------------------------------------------------
 # Prévia da legenda (usa o mesmo ffmpeg/libass do corte final)
 # --------------------------------------------------------------------------
-PREVIEW_WORDS = ["Esta", "é", "a", "prévia", "da", "sua", "legenda"]
+PREVIEW_WORDS = ["Essa", "é", "a", "prévia", "da", "sua", "legenda", "nos", "cortes", "da", "live"]
+PREVIEW_STEP = 0.45  # segundos por palavra
+PREVIEW_TIME = 1.2   # instante do quadro (a 3ª palavra está sendo falada)
 
 
-def make_preview(video: str | None, layout_label: str, style_dict: dict | None, workdir: Path, png: Path, cancel=None) -> None:
-    import threading
+def preview_words() -> list:
+    return [hl.Word(i * PREVIEW_STEP, i * PREVIEW_STEP + 0.40, t) for i, t in enumerate(PREVIEW_WORDS)]
 
-    cancel = cancel or threading.Event()
+
+def _preview_setup(video, layout_label):
     layout = media.LAYOUTS.get(layout_label, layout_label)
-    vertical = layout != "original"
-    style = subs.style_from_dict(style_dict)
     has_video = bool(video) and Path(video).is_file()
     src = (1920, 1080)
     if has_video:
         info = media.probe(video)
         src = (info["width"], info["height"])
+    return layout, (video if has_video else None), src
+
+
+def make_preview(video: str | None, layout_label: str, style_dict: dict | None, workdir: Path, png: Path, cancel=None, width: int | None = None) -> None:
+    """Quadro EXATO (renderizado pelo ffmpeg/libass, igual ao corte final)."""
+    import threading
+
+    cancel = cancel or threading.Event()
+    layout, vid, src = _preview_setup(video, layout_label)
+    vertical = layout != "original"
+    style = subs.style_from_dict(style_dict)
     size = media.output_size(layout, *src)
-    words = [hl.Word(i * 0.5, i * 0.5 + 0.45, t) for i, t in enumerate(PREVIEW_WORDS)]
-    chunks = subs.make_chunks(words, style, vertical)
+    chunks = subs.make_chunks(preview_words(), style, vertical)
     workdir.mkdir(parents=True, exist_ok=True)
     family, has_fonts = subs.prepare_font(workdir, style.font)
     (workdir / "sub.ass").write_text(subs.build_ass(chunks, size, style, family, vertical), encoding="utf-8")
-    media.render_preview(video if has_video else None, layout, workdir, str(png), has_fonts, cancel)
+    media.render_preview(vid, layout, workdir, str(png), has_fonts, cancel, True, width)
+
+
+def make_preview_background(video: str | None, layout_label: str, workdir: Path, png: Path, width: int, cancel=None) -> None:
+    """Quadro do vídeo SEM legenda (fundo da prévia ao vivo)."""
+    import threading
+
+    cancel = cancel or threading.Event()
+    layout, vid, _ = _preview_setup(video, layout_label)
+    workdir.mkdir(parents=True, exist_ok=True)
+    media.render_preview(vid, layout, workdir, str(png), False, cancel, False, width)

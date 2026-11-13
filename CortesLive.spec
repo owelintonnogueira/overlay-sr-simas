@@ -12,7 +12,7 @@ for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "av", "tokenizers",
         print(f"[spec] aviso: {pkg}: {e}")
 
 # ffmpeg.exe, ffprobe.exe, deno.exe (baixados pelo setup_env.ps1)
-datas += [("vendor", "vendor")]
+datas += [("vendor", "vendor"), ("assets", "assets")]
 
 a = Analysis(
     ["app/main.py"],
