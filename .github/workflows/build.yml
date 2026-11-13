@@ -3,6 +3,7 @@ name: Gerar instalador (Windows)
 on:
   workflow_dispatch: {}
   push:
+    branches: ["cortes-de-live"]
     tags: ["v*"]
 
 jobs:
